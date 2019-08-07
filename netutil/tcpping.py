@@ -58,11 +58,12 @@ DOT = '.'
 
 HEADER_TMPL = '''TCPPING {} ({}) TCP SYN/ACK/close'''
 
+RTT_TMPL = "rtt min/avg/max/mdev = {:.3f}/{:.3f}/{:.3f}/{:.3f} ms"
+
 FOOTER_TMPL = '''
 --- {ipaddr} tcpping statistics ---
 {total} connections attempted, {passed} established, {percent:d}% failed, time {totaltime}ms
-rtt min/avg/max/mdev = {min:.3f}/{max:.3f}/{avg:.3f}/{mdev:.3f} ms
-'''
+{rtt_stats}'''
 
 
 def typeof(obj):
@@ -81,6 +82,11 @@ class suppress(object):
         return None  # explicitly
 
 
+def mean(numbers):
+    """Return average of given list of numbers."""
+    return float(sum(numbers)) / max(len(numbers), 1)
+
+
 def statistics(numbers):
     """Return a four-element tuple with following statistics:
     (min, max, avg, mdev) where mdev is the mean deviation.
@@ -88,10 +94,8 @@ def statistics(numbers):
     :param numbers: list - a list of floats
     :return: tuple
     """
-
-    def mean(numbers):
-        return float(sum(numbers)) / max(len(numbers), 1)
-
+    if not numbers:
+        return (0.0, 0.0, 0.0, 0.0)
     avg = mean(numbers)
     mean_deviation = mean([abs(el - avg) for el in numbers])
     return min(numbers), max(numbers), avg, mean_deviation
@@ -125,24 +129,24 @@ def tcp_ping(host, port):
         sock.connect((host, port))
 
     except socket.timeout:
-        print("Connection timed out")
-        return False, wall_time() - start
+        print("Connection timed out (132)")
+        return False, -1
 
     except OSError as err:
-        print("OSError:", str(err))
-        return False, wall_time() - start
+        print("OSError:", str(err), "(136)")
+        return False, -1
 
     except Exception as err:
-        print("Exception occurred: ", typeof(err), ": ", str(err), sep="")
-        return False
+        print("{}: {} (140)".format(typeof(err), err))
+        return False, -1
 
     else:
         return True, wall_time() - start
 
     finally:
-        with suppress(Exception):
+        with suppress(socket.error, Exception):
             sock.shutdown(socket.SHUT_RDWR)
-        with suppress(Exception):
+        with suppress(socket.error, Exception):
             sock.close()
 
 
@@ -190,11 +194,18 @@ def do_loop(args, ipaddr):
 
     try:
         for idx in xrange(count):
-            isok, timespan = tcp_ping(ipaddr, port)
+            try:
+                isok, timespan = tcp_ping(ipaddr, port)
+
+            except Exception as err:
+                print("{}: {} (201)".format(typeof(err), err))
+                isok, timespan = False, -1
+
             passed += int(isok)
             failed += int(not isok)
             if isok:
-                times_list.append(timespan)
+                if timespan >= 0.0:
+                    times_list.append(timespan)
                 msg = "TCP/ACK from {}[{}]: tcp_seq={} time={:.3f} ms" \
                       .format(ipaddr, port, idx+1, 1000.0 * timespan)
                 print(msg)
@@ -222,9 +233,10 @@ def footer(*args):
     """
     passed, failed, times_list, totaltime, hostname, ipaddr = args
     total = passed + failed
-    percent = int(round(100.0 * failed / total))
+    percent = int(round(100.0 * failed / total)) if total else 0
     totaltime = int(round(totaltime * 1000.0))
     min, max, avg, mdev = [(elem * 1000.0) for elem in statistics(times_list)]
+    rtt_stats = RTT_TMPL.format(min, max, avg, mdev) if max else ""
     return FOOTER_TMPL.format(**locals())
 
 
@@ -261,7 +273,7 @@ def main(argv):
         results = list(do_loop(args, ipaddr))
 
     except Exception as exc:
-        print("Unhandled Exception: {}: {}".format(typeof(exc), exc))
+        print("{}: {} (269)".format(typeof(exc), exc))
         return 9
 
     else:
